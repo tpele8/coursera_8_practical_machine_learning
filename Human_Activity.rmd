@@ -1,0 +1,163 @@
+---
+title: "Exercise Prediction"
+author: "Tyler Peterson"
+date: "8/16/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+###### Clearing workspace ######
+rm(list=ls())
+cat("\014")
+
+###### Import libraries ######
+library(caret)
+library(rpart)
+library(randomForest)
+library(plyr)
+library(gbm)
+library(survival)
+library(splines)
+library(parallel)
+
+# Constants:
+READFILETRAIN <- '/Users/i64425/Documents/Coursera/coursera_8_practical_machine_learning/Course Project/Read/pml-training.csv'
+READFILETEST <- '/Users/i64425/Documents/Coursera/coursera_8_practical_machine_learning/Course Project/Read/pml-testing.csv'
+WRITEPLOT <- '/Users/i64425/Documents/Coursera/coursera_8_practical_machine_learning/Course Project/Write/EDA_plots.png'
+WRITEFILE1 <- '/Users/i64425/Documents/Coursera/coursera_8_practical_machine_learning/Course Project/Write/df_for_research.csv'
+WRITEFILE2 <- '/Users/i64425/Documents/Coursera/coursera_8_practical_machine_learning/Course Project/Write/df_for_submission.csv'
+```
+
+## Executive Summary
+
+The purpose of this project is to predict the manner in which several subjects will perform certain exercises. There are two datasets; one for training the predictive model, and one for testing the model accuracy.  The training dataset contains 19622 observations across 119 measurements using 6 distinct participants.  In the training dataset the "classe" variable is used as the dependent variable.  This same classe variable will be used in the testing dataset as the predictor/unkown variable. We will run three separate predictive models - Classification Trees, Random Forest, and Gradient Boosting Method (GBM) - and choose the one with the best predictive ability.
+
+```{r Human Activity - Reading the Data, echo = FALSE}
+dfTrainLoad<- read.csv(READFILETRAIN, header = TRUE)
+dfTestLoad <- read.csv(READFILETEST, header = TRUE)
+
+# Manipulate df to only contain relevant data:
+vars <- c('X', 'classe')
+varList <- as.list(grep("accel", names(dfTrainLoad), value = TRUE))
+finalVars <- c(varList, vars)
+dfFinal <- dfTrainLoad[,names(dfTrainLoad) %in% finalVars]
+```
+
+## Exploratory Data Analysis
+In this EDA step, we examine the data to see which measurements should be included in the models and which should be excluded.  Due to the objective of this report, only data having to do with the subject's acceleration should be used.  Thus only the "%accel_%" columns will be used in this anlaysis.  
+
+```{r Human Activity - Exploratory Data Analysis, echo = TRUE}
+beltVarDF <- as.data.frame(table(dfFinal$var_total_accel_belt))
+beltVarNA <- sum(is.na(dfFinal$var_total_accel_belt))
+beltVarNAPerc <- beltVarNA/(nrow(dfFinal))
+
+armVarDF <- as.data.frame(table(dfFinal$var_accel_arm))
+armVarNA <- sum(is.na(dfFinal$var_accel_arm))
+armVarNAPerc <- armVarNA/(nrow(dfFinal))
+
+forearmVarDF <- as.data.frame(table(dfFinal$var_accel_forearm))
+forearmVarNA <- sum(is.na(dfFinal$var_accel_forearm))
+forearmVarNAPerc <- forearmVarNA/(nrow(dfFinal))
+
+dumbbellVarDF <- as.data.frame(table(dfFinal$var_accel_dumbbell))
+dumbbellVarNA <- sum(is.na(dfFinal$var_accel_dumbbell))
+dumbbellVarNAPerc <- dumbbellVarNA/(nrow(dfFinal))
+
+measureTable = data.frame('Measure_Name' = c('beltVarNAPerc', 'armVarNAPerc', 'forearmVarNAPerc', 'dumbbellVarNAPerc'), 'Measure_Value' = c(beltVarNAPerc, armVarNAPerc ,forearmVarNAPerc, dumbbellVarNAPerc))
+
+print(measureTable)
+```
+## Including Plots
+
+We can visualize the distribution of the  using the following plots:
+
+```{r NA value distribution, echo=FALSE}
+par(mfrow= c(2,2))
+plot(dfFinal$var_accel_arm)
+plot(dfFinal$var_accel_dumbbell)
+plot(dfFinal$var_accel_forearm)
+plot(dfFinal$var_total_accel_belt)
+```
+
+Therefore, after calculating the measureTable and investigating missing data and data relevance, it has been determined that all "var_%" columns can be removed from the dataset, and all other "%accel_%" columns can be used in the data models.
+
+## Model Building
+
+```{r Data Manipulation, echo = FALSE}
+vars <- c('X', 'classe')
+varList <- as.list(grep("accel", names(dfTrainLoad), value = TRUE))
+finalVars <- c(varList, vars)
+dfFinal2 <- dfTrainLoad[,names(dfTrainLoad) %in% finalVars]
+```
+
+We tested three different models for accuracy: data trees, random forest, and gradient boosting method (gbm) using 10-fold cross validation.  After running these three models, we use the outputs of the confusion matrices to determine which model performs best.
+
+```{r Data Modeling, echo = FALSE}
+# Split data into train and test datasets:
+set.seed(1234)
+inTraining <- createDataPartition(dfFinal$classe, p = 0.7, list = FALSE)
+dfTrain <- dfFinal2[inTraining, ]
+dfTest <- dfFinal2[-inTraining, ]
+
+# Run different models on the data:
+# Data Trees:
+treeMod <- rpart(classe ~ ., data = dfTrain, method = 'class')
+treePred <- predict(treeMod, dfTest, type = 'class')
+treeCM <- confusionMatrix(treePred, dfTest$classe)
+print(paste('Data tree method overall accuracy: ', treeCM$overall[1]))
+print(treeCM$table)
+
+# Random Forest:
+rfMod <- randomForest(classe ~ ., data = dfTrain, na.action = na.exclude)
+rfPred <- predict(rfMod, dfTest, type = 'class')
+rfCM <- confusionMatrix(rfPred, dfTest$classe)
+print(paste('Random Forest method overall accuracy: ', rfCM$overall[1]))
+print(rfCM$table)
+
+# Gradient Boosting Method:
+gbmMod <- gbm(classe ~ ., distribution = 'multinomial', data = dfTrain, cv.folds = 5, verbose = FALSE)
+gbmPred <- as.data.frame(predict(gbmMod, newdata = dfTest))
+names(gbmPred) <- c('A', 'B', 'C', 'D', 'E')
+gbmPredVals <- colnames(gbmPred)[apply(gbmPred, 1, which.max)]
+
+gbmCM <- confusionMatrix(gbmPredVals, dfTest$classe)
+print(paste('GBM overall accuracy: ', gbmCM$overall[1]))
+print(gbmCM$table)
+```
+
+Comparing the confusion matrices and the accuracy tables, it's a tossup between the GBM and Data Trees methods, with Data Trees coming out a little bit better. The computation time wasn't significantly different between the two but, given GBM's general ability to exceed Data Trees in prediction, we will be using that method to predict the output for the test case.
+
+We used 5-fold cross-validation in the GBM model for validation.  This is done to help ensure that the model generalizes to the independent test dataset provided.
+
+## Running predictive model on test data
+
+```{r Predict Test Data, echo = TRUE}
+testPredict <- as.data.frame(predict(gbmMod, dfTestLoad))
+names(testPredict) <- c('A', 'B', 'C', 'D', 'E')
+
+classe <- colnames(testPredict)[apply(testPredict, 1, which.max)]
+
+# Bind predictions to testing dataframe
+testPredictFinal <- cbind(dfTestLoad, classe)
+
+# Add description column so classes are described within the dataframe
+testPredictFinal$classe_desc <- NA
+for(i in 1:nrow(testPredictFinal)){
+  if(testPredictFinal$classe[i] == 'A'){
+    testPredictFinal$classe_desc[i] = 'Exactly according to the specification'
+  } else if (testPredictFinal$classe[i] == 'B'){
+    testPredictFinal$classe_desc[i] = 'Throwing the elbows to the front'
+  } else if (testPredictFinal$classe[i] == 'C'){
+    testPredictFinal$classe_desc[i] = 'Lifting the dumbbell only halfway'
+  } else if (testPredictFinal$classe[i] == 'D'){
+    testPredictFinal$classe_desc[i] = 'Lowering the dumbbell only halfway'
+  } else if (testPredictFinal$classe[i] == 'E'){
+    testPredictFinal$classe_desc[i] = 'Throwing the hips to the front'
+  }
+}
+
+# Write resulting dataframe to screen
+print(testPredictFinal2 <- testPredictFinal[, names(testPredictFinal)%in%c('X', 'user_name', 'classe', 'classe_desc')])
+```
+
